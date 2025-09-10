@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>VOPRF + PIR — Detailed Step-by-Step Tutorial (Password-bound)</title>
+<style>
+  :root{--bg:#f7fbff;--card:#fff;--muted:#6b7280;--accent:#0ea5e9}
+  body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial; background:var(--bg); margin:0; color:#0f172a}
+  .wrap{max-width:1200px;margin:18px auto;padding:18px}
+  header{display:flex;justify-content:space-between;align-items:center}
+  h1{font-size:20px;margin:0}
+  .grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-top:14px}
+  .card{background:var(--card);border-radius:10px;padding:14px;box-shadow:0 6px 18px rgba(12,18,31,0.05);border:1px solid rgba(2,6,23,0.04)}
+  label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+  input[type=text], input[type=password], input[type=number]{width:100%;padding:8px;border-radius:6px;border:1px solid #e6eef6}
+  .controls{margin-top:12px;display:flex;flex-wrap:wrap;gap:8px}
+  button{padding:8px 10px;border-radius:8px;border:0;background:var(--accent);color:white;cursor:pointer}
+  button.secondary{background:#10b981}
+  button.ghost{background:#e6eef6;color:#0f172a}
+  .status{font-family:monospace;background:#fbfdff;padding:8px;border-radius:6px;border:1px dashed #e6eef6}
+  .dbgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}
+  .dbcell{background:#fbfcff;padding:10px;border-radius:6px;border:1px solid #eef6ff;font-size:12px}
+  .log{height:420px;overflow:auto;background:#0b1220;color:#dbeafe;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap}
+  .note{font-size:13px;color:var(--muted)}
+  .section-title{font-weight:600;margin-bottom:8px}
+  .micro{font-size:12px;color:#334155;margin-top:6px;background:#f8fafc;padding:8px;border-radius:6px;border:1px solid #eef2ff}
+  .small{font-size:12px;color:var(--muted)}
+  footer{margin-top:14px;font-size:12px;color:var(--muted)}
+  .compact{font-size:12px}
+  @media (max-width:1000px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Detailed Step-by-Step Overview of Authentication Protocol (Not PQ Secure)</h1>
+      <div class="note">Every micro-step is logged. <strong>Important:</strong> t, envelope_key and idx are derived from <em>username + password/biometric</em>. Toy crypto for visualization only.</div>
+    </header>
+
+    <div class="grid">
+      <main class="card">
+
+        <div>
+          <div class="section-title">Inputs (Client side)</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div style="flex:1;min-width:220px">
+              <label>Username (kept private by client)</label>
+              <input id="uname" type="text" value="alice@example.com">
+            </div>
+            <div style="width:260px">
+              <label>Password / Biometric (kept private by client)</label>
+              <input id="pw" type="password" value="correct horse battery staple">
+            </div>
+            <div style="width:120px">
+              <label>N (table size)</label>
+              <input id="dbN" type="number" value="16" min="4">
+            </div>
+            <div style="width:120px">
+              <label>B (bucket size)</label>
+              <input id="bucketSize" type="number" value="2" min="1" max="8">
+            </div>
+          </div>
+        </div>
+
+        <hr style="margin:12px 0;border:none;border-top:1px solid #eef6ff" />
+
+        <div class="section-title">Registration — micro-steps</div>
+        <div class="micro compact">
+          Use the buttons to run each micro-step of the registration flow. The log (right) will record every intermediate value and a human explanation. The important change: the VOPRF input is <code>H(uname || pw)</code>, so everything that follows is password-bound.
+        </div>
+
+        <div class="controls" style="margin-top:10px">
+          <button id="regStart">1) Client → Server: RegStart</button>
+          <button class="ghost" id="srvRegChallenge">2) Server → Client: RegChallenge</button>
+          <button id="clientBlind">3) Client: Blind (compute x = H(uname||pw), pick r, blinded)</button>
+          <button id="clientSendBlind">4) Client → Server: Send Blind</button>
+          <button class="secondary" id="serverEval">5) Server: Eval (compute eval, proof)</button>
+          <button id="clientUnblind">6) Client: Unblind (compute t)</button>
+          <button id="deriveEnvelopeKey">7) Derive envelope_key (HKDF)</button>
+          <button id="computeIdx">8) Compute tag & idx</button>
+          <button id="genSaltAndKey">9) Generate salt_client, derive sk_seed, sk_pw, vk</button>
+          <button id="createEnvelopeContent">10) Create envelope_content</button>
+          <button id="encryptEnvelope">11) AEAD_Enc(envelope_key, envelope_content)</button>
+          <button id="sendRegWrite">12) Client → Server: RegWrite (idx, envelope)</button>
+        </div>
+
+        <div style="margin-top:12px">
+          <button id="runFullReg" class="secondary">Run entire Registration automatically</button>
+        </div>
+
+        <hr style="margin:14px 0;border:none;border-top:1px solid #eef6ff" />
+
+        <div class="section-title">Login — micro-steps</div>
+        <div class="micro compact">Registration must be done first so an envelope exists in the DB. Use the login buttons to see each internal detail and how a wrong password breaks the flow.</div>
+        <div class="controls" style="margin-top:10px">
+          <button id="loginStart">1) Client → Server: LoginStart</button>
+          <button id="srvLoginChallenge">2) Server → Client: LoginChallenge (includes nonce_s)</button>
+          <button id="clientBlindLogin">3) Client: Blind (compute x = H(uname||pw), pick r, blinded)</button>
+          <button id="clientSendBlindLogin">4) Client → Server: Send Blind (login)</button>
+          <button id="serverEvalLogin">5) Server: Eval (login)</button>
+          <button id="clientUnblindLogin">6) Client: Unblind (get t)</button>
+          <button id="computeIdxLogin">7) Compute idx from t</button>
+          <button id="buildPIRQuery">8) Client: Build PIR query (simulated)</button>
+          <button id="performPIR">9) Client: Perform PIR (fetch bucket)</button>
+          <button id="decryptAttempts">10) Try decrypt each envelope in bucket</button>
+          <button id="deriveSkFromPw">11) Derive sk_seed & sk_pw from pw and salt</button>
+          <button id="computeSign">12) Compute m and produce σ (signature using sk_pw)</button>
+          <button id="sendLoginAuth">13) Client → Server: LoginAuth (session_id, proof σ, vk)</button>
+          <button id="serverVerify">14) Server: Verify signature with vk</button>
+        </div>
+
+        <div style="margin-top:12px">
+          <button id="runFullLogin" class="secondary">Run entire Login automatically</button>
+        </div>
+
+        <div style="margin-top:14px" class="small">
+          <strong>Important:</strong> This demo uses simplified, deterministic "toy" crypto for clarity. In a real system you'd use proper VOPRF and AEAD/HKDF/signature libraries; the cryptographic guarantees are different in production.
+        </div>
+
+      </main>
+
+      <aside class="card">
+        <div class="section-title">Server DB (bucketed)</div>
+        <div class="small">Buckets show number of slots and whether a ciphertext is present. Clicking a bucket shows its raw entries for audit (debug view).</div>
+        <div class="dbgrid" id="dbGrid"></div>
+
+        <div style="margin-top:12px">
+          <div class="section-title">Live step-by-step log (very detailed)</div>
+          <div class="log" id="log"></div>
+        </div>
+
+        <div style="margin-top:12px">
+          <div class="section-title">Current client state (visible to demo)</div>
+          <div class="small">
+            <div>t: <span id="viewT">-</span></div>
+            <div>envelope_key: <span id="viewEnvKey">-</span></div>
+            <div>idx: <span id="viewIdx">-</span></div>
+            <div>session_id: <span id="viewSession">-</span></div>
+            <div>nonce_s: <span id="viewNonce">-</span></div>
+            <div>decrypted envelope_content: <pre id="viewEnvelopeContent" style="white-space:pre-wrap;margin:6px 0;background:#fbfdff;padding:6px;border-radius:6px;border:1px solid #eef6ff"></pre></div>
+          </div>
+        </div>
+
+      </aside>
+    </div>
+
+    <footer>
+      <div class="note">If you'd like this exported as a ZIP or a GitHub Pages repo, tell me and I will package it.</div>
+    </footer>
+  </div>
+
+<script>
+// ---------------- Demo: deterministic toy crypto helpers ----------------
+(function(){
+  // numeric modulus for demo group ops
+  const MOD = BigInt('0x7fffffffffffffff'); // large 63-bit-like value
+
+  // deterministic hash -> BigInt
+  function demoHashBig(s){
+    // FNV-1a 64-bit-ish using BigInt
+    let h = BigInt(1469598103934665603n);
+    for(let i=0;i<s.length;i++){
+      h ^= BigInt(s.charCodeAt(i));
+      h = (h * BigInt(1099511628211)) & ((BigInt(1)<<BigInt(63)) - BigInt(1));
+    }
+    return h % MOD;
+  }
+  function demoHashHex(s){
+    const v = demoHashBig(s).toString(16);
+    return v.padStart(16, '0');
+  }
+
+  function randBig(){
+    // simple pseudo-random BigInt for demo
+    const r = Math.floor(Math.random()*Number.MAX_SAFE_INTEGER);
+    return BigInt(r) % MOD;
+  }
+
+  // modular inverse (extended Euclid) for BigInt
+  function egcd(a,b){
+    if(b===BigInt(0)) return {g:a,x:BigInt(1),y:BigInt(0)};
+    const q = a / b;
+    const r = a % b;
+    const rec = egcd(b,r);
+    return {g:rec.g, x: rec.y, y: rec.x - q * rec.y};
+  }
+  function modInv(a,m){
+    a = ((a % m)+m) % m;
+    const res = egcd(m,a);
+    if(res.g !== BigInt(1)) return null; // no inverse
+    const inv = (res.y % m + m) % m;
+    return inv;
+  }
+
+  // simple HKDF-like and KDF functions (toy)
+  function hkdf(t,label){ return 'hkdf_'+demoHashHex(t+'::'+label); }
+  function kdf(pw,salt){ return 'kdf_'+demoHashHex(pw+'::'+salt); }
+  // Make sk_pw and vk share the same underlying suffix so mapping is easy in demo
+  function derive_sk_pw(sk_seed){ return 'skpw_'+demoHashHex(sk_seed); }
+  function derive_vk(sk_seed){ return 'vk_'+demoHashHex(sk_seed); }
+
+  function aead_enc(key, contentObj){
+    const iv = demoHashHex('iv::'+key+'::'+Date.now());
+    const plaintext = JSON.stringify(contentObj);
+    const ct = btoa(plaintext);
+    const tag = demoHashHex(key+'::'+ct+'::'+iv);
+    const envelope = { iv, ct, tag };
+    return btoa(JSON.stringify(envelope));
+  }
+  function aead_dec(key, envelope_b64){
+    try{
+      const env = JSON.parse(atob(envelope_b64));
+      const expectedTag = demoHashHex(key+'::'+env.ct+'::'+env.iv);
+      if(expectedTag === env.tag) return JSON.parse(atob(env.ct));
+      return null;
+    }catch(e){ return null; }
+  }
+
+  // Signature functions for demo:
+  // Client signs with sk_pw; in this toy model the signature is derived from the vk that corresponds to the sk_pw
+  function makeSignatureFromSk(sk_pw, m){
+    // sk_pw looks like 'skpw_<suffix>' => derive vk_equiv as 'vk_<suffix>'
+    const suffix = sk_pw.slice(5);
+    const vk_equiv = 'vk_'+suffix;
+    return 'SIG_'+demoHashHex(vk_equiv+'::'+m);
+  }
+  function verifySignature(vk, m, sigma){
+    const expected = 'SIG_'+demoHashHex(vk+'::'+m);
+    return expected === sigma;
+  }
+
+  // ----------------- state -----------------
+  const Kpub = 'Kpub_demo_key_0xABC123';
+  const SK_SERVER = demoHashBig(Kpub+'::server_sk'); // secret scalar of server (toy)
+
+  let N = 16;
+  let BUCKET_SIZE = 2;
+  let serverDb = [];
+
+  function initDb(){ serverDb = []; for(let i=0;i<N;i++) serverDb.push({bucket:[]}); renderDb(); }
+
+  // client visible state for demo UI
+  const client = {
+    uname: '', pw: '', session_id: null, nonce_s: null,
+    // VOPRF blinded values
+    x: null, r: null, blinded: null, eval: null, inv_r: null,
+    t_raw: null, t: null,
+    envelope_key: null, idx: null, tag: null,
+    salt_client: null, sk_seed: null, sk_pw: null, vk: null,
+    envelope_content: null, envelope_cipher: null, sigma: null
+  };
+
+  // UI refs
+  const unameI = document.getElementById('uname');
+  const pwI = document.getElementById('pw');
+  const dbN = document.getElementById('dbN');
+  const bucketSizeI = document.getElementById('bucketSize');
+  const logEl = document.getElementById('log');
+  const dbGrid = document.getElementById('dbGrid');
+  const viewT = document.getElementById('viewT');
+  const viewEnvKey = document.getElementById('viewEnvKey');
+  const viewIdx = document.getElementById('viewIdx');
+  const viewSession = document.getElementById('viewSession');
+  const viewNonce = document.getElementById('viewNonce');
+  const viewEnvelopeContent = document.getElementById('viewEnvelopeContent');
+
+  function appendLog(stepTitle, explanation, details){
+    const idx = (logEl.textContent.match(/\n/g)||[]).length + 1;
+    const time = new Date().toLocaleTimeString();
+    let s = `--- [${time}] STEP ${idx}: ${stepTitle} ---\n`;
+    if(explanation) s += `Explanation: ${explanation}\n`;
+    if(details) s += `Details:\n${details}\n`;
+    s += '\n';
+    logEl.textContent += s;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function renderDb(){ dbGrid.innerHTML = ''; for(let i=0;i<N;i++){ const cell = document.createElement('div'); cell.className='dbcell'; cell.innerHTML = `<div style="font-family:monospace">DB[${i}]</div><div style="color:${serverDb[i].bucket.length? '#0f172a':'#94a3b8'};font-size:12px">${serverDb[i].bucket.length}/${BUCKET_SIZE} slot(s)</div>`; cell.onclick = ()=>{ showBucket(i);} ; dbGrid.appendChild(cell);} }
+  function showBucket(i){ const entries = serverDb[i].bucket; let s = `DB[${i}] bucket contents (raw):\n`; if(entries.length===0) s += '<empty>\n'; entries.forEach((e,j)=>{ s += `slot ${j}: ciphertext=${e.envelope.slice(0,40)}...\n` }); alert(s); }
+
+  // ---------- Registration micro-steps ----------
+  document.getElementById('regStart').onclick = ()=>{
+    client.uname = unameI.value; client.pw = pwI.value;
+    appendLog('Client → Server: RegStart', 'Client announces it wants to register. Payload: { request_registration }', 'Client has not revealed username or password to server yet (only initiating registration).');
+  };
+
+  document.getElementById('srvRegChallenge').onclick = ()=>{
+    client.session_id = 'sess_'+Math.floor(Math.random()*100000);
+    viewSession.textContent = client.session_id;
+    appendLog('Server → Client: RegChallenge', 'Server replies with its public key and a session identifier. Payload: { Kpub, session_id }', `Kpub=${Kpub}\nsession_id=${client.session_id}`);
+  };
+
+  document.getElementById('clientBlind').onclick = ()=>{
+    // Client computes x = H(uname || pw)
+    client.x = demoHashBig(client.uname + '::' + client.pw);
+    // choose random r
+    client.r = randBig();
+    // blinded = x * r mod MOD
+    client.blinded = (client.x * client.r) % MOD;
+    appendLog('Client: Blind step (VOPRF.Blind)', 'Client computes x = H(uname || pw), chooses random blinding factor r, and computes blinded = x * r (mod group). This hides the value from the server while binding to the password/biometric.', `Computed values:\n x = H(uname||pw) = 0x${demoHashHex(client.uname + '::' + client.pw)} (numeric=${client.x})\n r (random blinding factor) = 0x${client.r.toString(16)}\n blinded = (x * r) mod MOD = 0x${client.blinded.toString(16)}`);
+    viewT.textContent = '-';
+  };
+
+  document.getElementById('clientSendBlind').onclick = ()=>{
+    if(!client.blinded) return appendLog('ERROR','You must run the blind step first','');
+    appendLog('Client → Server: Send blinded value (VOPRF.blind)', 'Client sends the blinded value to server. Server still cannot learn uname or pw because of the blinding factor r.', `Sent blinded = 0x${client.blinded.toString(16)}`);
+  };
+
+  document.getElementById('serverEval').onclick = ()=>{
+    if(!client.blinded) return appendLog('ERROR','Need blinded value','');
+    // server computes eval = blinded * SK_SERVER (mod)
+    client.eval = (client.blinded * SK_SERVER) % MOD;
+    const proof = 'proof_demo_for_eval';
+    appendLog('Server: Eval step (VOPRF.Eval)', 'Server uses its secret key SK_SERVER to compute eval = blinded * SK_SERVER (mod group). It also produces a proof (demo) that evaluation was done correctly.', `Server SK (secret) = 0x${SK_SERVER.toString(16)}\nReceived blinded = 0x${client.blinded.toString(16)}\nComputed eval = (blinded * SK_SERVER) mod MOD = 0x${client.eval.toString(16)}\nProof (demo) = ${proof}`);
+  };
+
+  document.getElementById('clientUnblind').onclick = ()=>{
+    if(!client.eval || !client.r) return appendLog('ERROR','Need eval and blinding factor r','');
+    // compute inv_r
+    client.inv_r = modInv(client.r, MOD);
+    client.t_raw = (client.eval * client.inv_r) % MOD; // should equal x * SK_SERVER % MOD
+    client.t = demoHashHex(client.t_raw.toString());
+    appendLog('Client: Unblind step (VOPRF.Unblind)', 'Client unblinds the server evaluation using inverse of r to obtain t_raw = (eval * r^{-1}) mod group. Then t = H(t_raw) is the final PRF output. Note that t depends on H(uname||pw) and the server secret SK_SERVER — so an attacker who knows only uname cannot compute t without interacting.', `inv_r = r^{-1} mod MOD = 0x${client.inv_r.toString(16)}\n t_raw = (eval * inv_r) mod MOD = 0x${client.t_raw.toString(16)} (this equals H(uname||pw) * SK_SERVER mod MOD)\n t = H(t_raw) = 0x${client.t}`);
+    viewT.textContent = '0x'+client.t;
+  };
+
+  document.getElementById('deriveEnvelopeKey').onclick = ()=>{
+    if(!client.t) return appendLog('ERROR','Compute t first','');
+    client.envelope_key = hkdf(client.t, 'envelope');
+    appendLog('Derive envelope_key (HKDF)', 'Derive a symmetric envelope key from t with label "envelope". This key will encrypt the envelope content so only someone who can reproduce t (i.e., correct uname+pw) can decrypt.', `envelope_key = HKDF(t, "envelope") = ${client.envelope_key}`);
+    viewEnvKey.textContent = client.envelope_key;
+  };
+
+  document.getElementById('computeIdx').onclick = ()=>{
+    if(!client.t) return appendLog('ERROR','Compute t first','');
+    client.tag = demoHashHex(client.t+'::tag');
+    N = parseInt(dbN.value) || 16; client.idx = parseInt(BigInt('0x'+client.tag) % BigInt(N));
+    appendLog('Compute tag & idx', 'Compute tag = H_tag(t) and map to table index: idx = tag mod N. Because t is password-bound, idx is unlinkable to public username unless attacker knows the password.', `tag = H_tag(t) = 0x${client.tag}\nN = ${N}\nidx = H_tag(t) mod N = ${client.idx}`);
+    viewIdx.textContent = client.idx;
+  };
+
+  document.getElementById('genSaltAndKey').onclick = ()=>{
+    if(!client.t) return appendLog('ERROR','Compute t first','');
+    client.salt_client = 'salt_'+Math.floor(Math.random()*100000);
+    client.sk_seed = kdf(client.pw, client.salt_client);
+    client.sk_pw = derive_sk_pw(client.sk_seed);
+    client.vk = derive_vk(client.sk_seed);
+    appendLog('Derive sk_seed, sk_pw and vk (client-side)', 'Client chooses a salt_client and uses a password KDF to derive a seed, then deterministically derives sk_pw and vk from the seed. These are only known to the client (vk will be placed inside the envelope).', `salt_client = ${client.salt_client}\nsk_seed = KDF(pw, salt_client) = ${client.sk_seed}\nsk_pw = derive_sk_pw(sk_seed) = ${client.sk_pw}\nvk = derive_vk(sk_seed) = ${client.vk}`);
+  };
+
+  document.getElementById('createEnvelopeContent').onclick = ()=>{
+    if(!client.vk || !client.salt_client) return appendLog('ERROR','Derive keys & salt first','');
+    client.envelope_content = { vk: client.vk, salt_client: client.salt_client, metadata: { created: new Date().toISOString() } };
+    appendLog('Create envelope_content', 'Envelope content holds the public verification key and the salt the client used for password derivation. This content will be encrypted before sending to the server.', `envelope_content (plaintext) = ${JSON.stringify(client.envelope_content, null, 2)}`);
+    viewEnvelopeContent.textContent = JSON.stringify(client.envelope_content, null, 2);
+  };
+
+  document.getElementById('encryptEnvelope').onclick = ()=>{
+    if(!client.envelope_content || !client.envelope_key) return appendLog('ERROR','Need envelope_content and envelope_key','');
+    client.envelope_cipher = aead_enc(client.envelope_key, client.envelope_content);
+    const parsed = JSON.parse(atob(client.envelope_cipher));
+    appendLog('AEAD_Enc(envelope_key, envelope_content)', 'Client encrypts the envelope_content using the symmetric envelope_key. Only someone who can derive envelope_key (i.e., rightful client with same uname+pw) can decrypt.', `IV = ${parsed.iv}\nciphertext (b64) = ${parsed.ct}\ntag = ${parsed.tag}\nFull envelope (base64) = ${client.envelope_cipher}`);
+  };
+
+  document.getElementById('sendRegWrite').onclick = ()=>{
+    if(client.idx===null || !client.envelope_cipher) return appendLog('ERROR','Need idx and envelope','');
+    N = parseInt(dbN.value) || 16; BUCKET_SIZE = parseInt(bucketSizeI.value) || 2;
+    // ensure serverDb sized
+    if(serverDb.length !== N) initDb();
+    appendLog('Client → Server: RegWrite', 'Client sends { idx, envelope } to server. The envelope is encrypted; server cannot see its plaintext.', `Payload: idx=${client.idx}, envelope (base64)=${client.envelope_cipher}`);
+    const bucket = serverDb[client.idx].bucket;
+    if(bucket.length < BUCKET_SIZE){ bucket.push({ envelope: client.envelope_cipher }); renderDb(); appendLog('Server: Stored envelope', 'Server stores the ciphertext in DB[idx] bucket. Reply: OK', `DB[${client.idx}] now has ${bucket.length} slot(s)`); }
+    else{ appendLog('Server: Collision', 'Bucket is full. Server replies Collision. Client can retry with different idx (e.g., H_tag(t||1) mod N) — this may reveal multiple write attempts to server.', `DB[${client.idx}] has ${bucket.length}/${BUCKET_SIZE} slots`); }
+  };
+
+  document.getElementById('runFullReg').onclick = async ()=>{
+    document.getElementById('regStart').click();
+    await pause(160);
+    document.getElementById('srvRegChallenge').click(); await pause(160);
+    document.getElementById('clientBlind').click(); await pause(160);
+    document.getElementById('clientSendBlind').click(); await pause(160);
+    document.getElementById('serverEval').click(); await pause(160);
+    document.getElementById('clientUnblind').click(); await pause(160);
+    document.getElementById('deriveEnvelopeKey').click(); await pause(160);
+    document.getElementById('computeIdx').click(); await pause(160);
+    document.getElementById('genSaltAndKey').click(); await pause(160);
+    document.getElementById('createEnvelopeContent').click(); await pause(160);
+    document.getElementById('encryptEnvelope').click(); await pause(160);
+    document.getElementById('sendRegWrite').click();
+  };
+
+  // ---------- Login micro-steps ----------
+  document.getElementById('loginStart').onclick = ()=>{
+    client.session_id = 'sess_'+Math.floor(Math.random()*100000);
+    client.uname = unameI.value; client.pw = pwI.value;
+    // generate server nonce for login challenge
+    client.nonce_s = 'nonce_'+Math.floor(Math.random()*100000);
+    viewSession.textContent = client.session_id; viewNonce.textContent = client.nonce_s;
+    appendLog('Client → Server: LoginStart', 'Client begins a login. It does not reveal username or password in this message.', 'Payload: { } - empty');
+  };
+
+  document.getElementById('srvLoginChallenge').onclick = ()=>{
+    appendLog('Server → Client: LoginChallenge', 'Server sends its public key and a fresh nonce for this session. Payload: { Kpub, session_id, nonce_s }', `Kpub=${Kpub}\nsession_id=${client.session_id}\nnonce_s=${client.nonce_s}`);
+  };
+
+  document.getElementById('clientBlindLogin').onclick = ()=>{
+    // repeat VOPRF blind steps for login; NOTE: input = H(uname || pw)
+    client.x = demoHashBig(client.uname + '::' + client.pw);
+    client.r = randBig();
+    client.blinded = (client.x * client.r) % MOD;
+    appendLog('Client (login): Blind step', 'Client computes x = H(uname||pw), picks r and blinded = x*r to hide the input from the server.', `x = H(uname||pw) = 0x${demoHashHex(client.uname + '::' + client.pw)}\nr = 0x${client.r.toString(16)}\nblinded = 0x${client.blinded.toString(16)}`);
+  };
+
+  document.getElementById('clientSendBlindLogin').onclick = ()=>{
+    if(!client.blinded) return appendLog('ERROR','Blind first','');
+    appendLog('Client → Server: Send blinded (login)', 'Client sends the blinded value. Server still cannot derive uname or pw.', `blinded = 0x${client.blinded.toString(16)}`);
+  };
+
+  document.getElementById('serverEvalLogin').onclick = ()=>{
+    if(!client.blinded) return appendLog('ERROR','Blind first','');
+    client.eval = (client.blinded * SK_SERVER) % MOD;
+    appendLog('Server: Eval (login)', 'Server evaluates blinded with its secret key, as before.', `eval = 0x${client.eval.toString(16)}\n(proof omitted in demo)`);
+  };
+
+  document.getElementById('clientUnblindLogin').onclick = ()=>{
+    if(!client.eval) return appendLog('ERROR','No eval to unblind','');
+    client.inv_r = modInv(client.r, MOD);
+    client.t_raw = (client.eval * client.inv_r) % MOD;
+    client.t = demoHashHex(client.t_raw.toString());
+    appendLog('Client (login): Unblind', 'Client unblinds the eval as during registration to obtain t. Because the VOPRF input included the password, t will be correct only if the correct password was used.', `inv_r = 0x${client.inv_r.toString(16)}\n t_raw = 0x${client.t_raw.toString(16)}\n t = 0x${client.t}`);
+    viewT.textContent = '0x'+client.t;
+  };
+
+  document.getElementById('computeIdxLogin').onclick = ()=>{
+    client.tag = demoHashHex(client.t+'::tag');
+    N = parseInt(dbN.value) || 16; client.idx = parseInt(BigInt('0x'+client.tag) % BigInt(N));
+    appendLog('Client: compute idx (login)', 'Client deterministically maps t to the same idx used at registration (because t depends on uname||pw).', `tag = 0x${client.tag}\nidx = ${client.idx}`);
+    viewIdx.textContent = client.idx;
+  };
+
+  document.getElementById('buildPIRQuery').onclick = ()=>{
+    // simulate PIR query creation
+    const query = { type:'homomorphic-vector', N: N, encoded:'<enc_query_placeholder>' };
+    appendLog('Client: Build PIR query', 'Client constructs a private query (e.g., homomorphic vector with a 1 at idx) so the server cannot learn which index is requested.', `PIR query (simulated) = ${JSON.stringify(query)}`);
+  };
+
+  document.getElementById('performPIR').onclick = ()=>{
+    if(client.idx===null) return appendLog('ERROR','Compute idx first','');
+    // For demo, PIR returns the bucket at idx
+    const bucket = serverDb[client.idx].bucket;
+    appendLog('Client: Perform PIR', 'Client sends encrypted query; server computes an encrypted linear combination and returns ciphertext. In this demo we simulate PIR by returning the bucket array. The server learns the bucket index but not which slot within the bucket the client wants.', `PIR result: returned ${bucket.length} envelope(s)`);
+  };
+
+  document.getElementById('decryptAttempts').onclick = ()=>{
+    if(client.idx===null) return appendLog('ERROR','Compute idx first','');
+    const bucket = serverDb[client.idx].bucket;
+    if(bucket.length===0) return appendLog('Client: bucket empty','No envelopes found in this bucket','');
+    appendLog('Client: Attempt to decrypt each envelope in returned bucket', 'Client tries to decrypt every envelope in the bucket using envelope_key = HKDF(t, "envelope"). Only the correct envelope (if any) will decrypt to a sensible envelope_content.', '');
+    let success = false;
+    for(let i=0;i<bucket.length;i++){
+      const env = bucket[i].envelope;
+      appendLog(`Attempt ${i}`, `Trying to decrypt slot ${i} with envelope_key=${client.envelope_key}`, `envelope (base64) preview: ${env.slice(0,40)}...`);
+      const dec = aead_dec(client.envelope_key, env);
+      if(dec){ client.envelope_content = dec; client.envelope_cipher = env; viewEnvelopeContent.textContent = JSON.stringify(dec,null,2); appendLog('Decryption SUCCESS', 'This envelope decrypted correctly. We recovered the envelope_content (vk, salt_client, metadata).', `decrypted envelope_content = ${JSON.stringify(dec,null,2)}`); success = true; break; }
+      else{ appendLog('Decryption failed for this slot', 'This ciphertext did not decrypt with the envelope_key (not the right one).', ''); }
+    }
+    if(!success) appendLog('No matching envelope found in bucket', 'Either the account is not registered or the password/biometric used is incorrect (wrong t).', '');
+  };
+
+  document.getElementById('deriveSkFromPw').onclick = ()=>{
+    if(!client.envelope_content) return appendLog('ERROR','No decrypted envelope_content available','');
+    client.sk_seed = kdf(client.pw, client.envelope_content.salt_client);
+    client.sk_pw = derive_sk_pw(client.sk_seed);
+    client.vk = derive_vk(client.sk_seed);
+    appendLog('Derive sk_seed & sk_pw from pw and salt', 'Using salt_client recovered from envelope_content and the user-supplied password, derive sk_seed and then sk_pw & vk. These should match the values created at registration if the password is correct.', `salt_client (from envelope) = ${client.envelope_content.salt_client}\nsk_seed = KDF(pw, salt_client) = ${client.sk_seed}\nsk_pw = ${client.sk_pw}\nvk (derived) = ${client.vk}`);
+  };
+
+  document.getElementById('computeSign').onclick = ()=>{
+    if(!client.envelope_cipher) return appendLog('ERROR','No envelope ciphertext available','');
+    if(!client.nonce_s) client.nonce_s = 'nonce_'+Math.floor(Math.random()*100000);
+    const h_env = demoHashHex(client.envelope_cipher);
+    const m = `${client.nonce_s}||${client.session_id}||H(envelope)=${h_env}`;
+    // Client signs using sk_pw — in this toy model we create a signature derived from vk that corresponds to sk_pw
+    client.sigma = makeSignatureFromSk(client.sk_pw, m);
+    appendLog('Compute m and produce signature σ', 'Client builds m = nonce_s || session_id || H(envelope) and signs it with sk_pw. The signature is constructed so the server can verify it knowing vk (which the client will send).', `H(envelope) = 0x${h_env}\nm = ${m}\nσ (demo) = ${client.sigma}`);
+  };
+
+  document.getElementById('sendLoginAuth').onclick = ()=>{
+    if(!client.sigma) return appendLog('ERROR','Compute signature first','');
+    appendLog('Client → Server: LoginAuth', 'Client sends the session_id, the proof (σ), and the public verification key (vk). The client must not send idx, t, or pw in clear.', `Payload sent: session_id=${client.session_id}\nvk=${client.vk}\nσ=${client.sigma}`);
+  };
+
+  document.getElementById('serverVerify').onclick = ()=>{
+    if(!client.sigma) return appendLog('ERROR','No signature to verify','');
+    // server uses vk and m to verify
+    const h_env = demoHashHex(client.envelope_cipher || '');
+    const m = `${client.nonce_s}||${client.session_id}||H(envelope)=${h_env}`;
+    const ok = verifySignature(client.vk, m, client.sigma);
+    if(ok){ appendLog('Server: Verify signature (demo)', 'Server verifies the signature σ using the received vk. On success the server authenticates the client. Note: server learns vk (a public key tied to pw) but not the password itself.', 'Signature verification result: OK'); }
+    else{ appendLog('Server: Verify signature (demo)', 'Signature verification failed. Login denied.', 'Signature verification result: FAILED'); }
+  };
+
+  document.getElementById('runFullLogin').onclick = async ()=>{
+    document.getElementById('loginStart').click(); await pause(160);
+    document.getElementById('srvLoginChallenge').click(); await pause(160);
+    document.getElementById('clientBlindLogin').click(); await pause(160);
+    document.getElementById('clientSendBlindLogin').click(); await pause(160);
+    document.getElementById('serverEvalLogin').click(); await pause(160);
+    document.getElementById('clientUnblindLogin').click(); await pause(160);
+    document.getElementById('computeIdxLogin').click(); await pause(160);
+    document.getElementById('buildPIRQuery').click(); await pause(160);
+    document.getElementById('performPIR').click(); await pause(160);
+    document.getElementById('decryptAttempts').click(); await pause(160);
+    document.getElementById('deriveSkFromPw').click(); await pause(160);
+    document.getElementById('computeSign').click(); await pause(160);
+    document.getElementById('sendLoginAuth').click(); await pause(160);
+    document.getElementById('serverVerify').click();
+  };
+
+  // reset & init
+  function pause(ms){ return new Promise(r=>setTimeout(r,ms)); }
+  function resetAll(){ N = parseInt(dbN.value) || 16; BUCKET_SIZE = parseInt(bucketSizeI.value) || 2; initDb(); logEl.textContent = ''; client.session_id = null; client.nonce_s = null; viewSession.textContent = '-'; viewNonce.textContent='-'; viewT.textContent='-'; viewEnvKey.textContent='-'; viewIdx.textContent='-'; viewEnvelopeContent.textContent=''; }
+  document.getElementById('dbN').onchange = ()=>{ resetAll(); }
+  document.getElementById('bucketSize').onchange = ()=>{ resetAll(); }
+
+  // initialize
+  initDb(); resetAll();
+
+})();
+</script>
+</body>
+</html>
